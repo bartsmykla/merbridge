@@ -88,8 +88,8 @@ compile-clean:
 	[ -f mb_connect.c ] && sudo rm -f $(TARGETS)
 
 # Map
-load-map-cookie_original_dst:
-	[ -f $(PROG_MOUNT_PATH)/cookie_original_dst ] || sudo bpftool map create $(PROG_MOUNT_PATH)/cookie_original_dst type lru_hash key 8 value 24 entries 65535 name cookie_original_dst
+load-map-cookie_orig_dst:
+	[ -f $(PROG_MOUNT_PATH)/cookie_orig_dst ] || sudo bpftool map create $(PROG_MOUNT_PATH)/cookie_orig_dst type lru_hash key 8 value 24 entries 65535 name cookie_orig_dst
 
 load-map-local_pod_ips:
 	[ -f $(TC_PINNING_PATH)/local_pod_ips ] || sudo bpftool map create $(TC_PINNING_PATH)/local_pod_ips type hash key 16 value 244 entries 1024 name local_pod_ips
@@ -97,11 +97,11 @@ load-map-local_pod_ips:
 load-map-process_ip:
 	[ -f $(PROG_MOUNT_PATH)/process_ip ] || sudo bpftool map create $(PROG_MOUNT_PATH)/process_ip type lru_hash key 4 value 4 entries 1024 name process_ip
 
-load-map-mark_pod_ips_map:
-	[ -f $(PROG_MOUNT_PATH)/mark_pod_ips_map ] || sudo bpftool map create $(PROG_MOUNT_PATH)/mark_pod_ips_map type hash key 4 value 16 entries 65535 name mark_pod_ips_map
+load-map-mark_pod_ips:
+	[ -f $(PROG_MOUNT_PATH)/mark_pod_ips ] || sudo bpftool map create $(PROG_MOUNT_PATH)/mark_pod_ips type hash key 4 value 16 entries 65535 name mark_pod_ips
 
-load-map-pair_original_dst:
-	[ -f $(TC_PINNING_PATH)/pair_original_dst ] || sudo bpftool map create $(TC_PINNING_PATH)/pair_original_dst type lru_hash key 36 value 24 entries 65535 name pair_original_dst
+load-map-pair_orig_dst:
+	[ -f $(TC_PINNING_PATH)/pair_orig_dst ] || sudo bpftool map create $(TC_PINNING_PATH)/pair_orig_dst type lru_hash key 36 value 24 entries 65535 name pair_orig_dst
 
 load-map-sock_pair_map:
 	[ -f $(PROG_MOUNT_PATH)/sock_pair_map ] || sudo bpftool map create $(PROG_MOUNT_PATH)/sock_pair_map type sockhash key 36 value 4 entries 65535 name sock_pair_map
@@ -110,15 +110,15 @@ load-map-sock_pair_map:
 clean-maps:
 	sudo rm -f \
 		$(PROG_MOUNT_PATH)/sock_pair_map \
-		$(TC_PINNING_PATH)/pair_original_dst \
+		$(TC_PINNING_PATH)/pair_orig_dst \
 		$(PROG_MOUNT_PATH)/process_ip \
 		$(TC_PINNING_PATH)/local_pod_ips \
-		$(PROG_MOUNT_PATH)/cookie_original_dst \
-		$(PROG_MOUNT_PATH)/mark_pod_ips_map
+		$(PROG_MOUNT_PATH)/cookie_orig_dst \
+		$(PROG_MOUNT_PATH)/mark_pod_ips
 
-load-getsock: load-map-pair_original_dst
+load-getsock: load-map-pair_orig_dst
 	sudo bpftool -m prog load mb_get_sockopts.o $(PROG_MOUNT_PATH)/get_sockopts \
-		map name pair_original_dst pinned $(TC_PINNING_PATH)/pair_original_dst
+		map name pair_orig_dst pinned $(TC_PINNING_PATH)/pair_orig_dst
 
 attach-getsock:
 	sudo bpftool cgroup attach $(CGROUP2_PATH) getsockopt pinned $(PROG_MOUNT_PATH)/get_sockopts
@@ -138,12 +138,13 @@ clean-redir:
 	sudo bpftool prog detach pinned $(PROG_MOUNT_PATH)/redir msg_verdict pinned $(PROG_MOUNT_PATH)/sock_pair_map
 	sudo rm $(PROG_MOUNT_PATH)/redir
 
-load-connect: load-map-cookie_original_dst load-map-local_pod_ips load-map-process_ip load-map-mark_pod_ips_map
-	sudo bpftool -m prog loadall mb_connect.o $(PROG_MOUNT_PATH)/connect \
-		map name cookie_original_dst pinned $(PROG_MOUNT_PATH)/cookie_original_dst \
-		map name local_pod_ips pinned $(TC_PINNING_PATH)/local_pod_ips \
-		map name mark_pod_ips_map pinned $(PROG_MOUNT_PATH)/mark_pod_ips_map \
-		map name process_ip pinned $(PROG_MOUNT_PATH)/process_ip
+load-connect: load-map-cookie_orig_dst load-map-local_pod_ips load-map-process_ip load-map-mark_pod_ips
+	echo "load-connect"
+#	sudo strace /home/bart/libbpf-bootstrap/build/bpftool/bpftool -m prog loadall mb_connect.o $PROG_MOUNT_PATH/connect \
+#		map name cookie_orig_dst pinned $PROG_MOUNT_PATH/cookie_orig_dst \
+#		map name local_pod_ips pinned $TC_PINNING_PATH/local_pod_ips \
+#		map name mark_pod_ips pinned $PROG_MOUNT_PATH/mark_pod_ips \
+#		map name process_ip pinned $PROG_MOUNT_PATH/process_ip
 
 attach-connect:
 ifeq ($(ENABLE_IPV4),true)
@@ -162,11 +163,11 @@ ifeq ($(ENABLE_IPV6),true)
 endif
 	sudo rm -rf $(PROG_MOUNT_PATH)/connect
 
-load-sockops: load-map-cookie_original_dst load-map-process_ip load-map-pair_original_dst load-map-sock_pair_map
+load-sockops: load-map-cookie_orig_dst load-map-process_ip load-map-pair_orig_dst load-map-sock_pair_map
 	sudo bpftool -m prog load mb_sockops.o $(PROG_MOUNT_PATH)/sockops \
-		map name cookie_original_dst pinned $(PROG_MOUNT_PATH)/cookie_original_dst \
+		map name cookie_orig_dst pinned $(PROG_MOUNT_PATH)/cookie_orig_dst \
 		map name process_ip pinned $(PROG_MOUNT_PATH)/process_ip \
-		map name pair_original_dst pinned $(TC_PINNING_PATH)/pair_original_dst \
+		map name pair_orig_dst pinned $(TC_PINNING_PATH)/pair_orig_dst \
 		map name sock_pair_map pinned $(PROG_MOUNT_PATH)/sock_pair_map
 
 attach-sockops:
@@ -192,9 +193,9 @@ ifeq ($(ENABLE_IPV4),true)
 	sudo rm -rf $(PROG_MOUNT_PATH)/bind
 endif
 
-load-sendmsg: load-map-cookie_original_dst
+load-sendmsg: load-map-cookie_orig_dst
 	sudo bpftool -m prog loadall mb_sendmsg.o $(PROG_MOUNT_PATH)/sendmsg \
-		map name cookie_original_dst pinned $(PROG_MOUNT_PATH)/cookie_original_dst
+		map name cookie_orig_dst pinned $(PROG_MOUNT_PATH)/cookie_orig_dst
 
 attach-sendmsg:
 ifeq ($(ENABLE_IPV4),true)
@@ -212,9 +213,9 @@ ifeq ($(ENABLE_IPV6),true)
 	sudo bpftool cgroup detach $(CGROUP2_PATH) sendmsg6 pinned $(PROG_MOUNT_PATH)/sendmsg/cgroup_sendmsg6
 endif
 
-load-recvmsg: load-map-cookie_original_dst
+load-recvmsg: load-map-cookie_orig_dst
 	sudo bpftool -m prog loadall mb_recvmsg.o $(PROG_MOUNT_PATH)/recvmsg \
-		map name cookie_original_dst pinned $(PROG_MOUNT_PATH)/cookie_original_dst
+		map name cookie_orig_dst pinned $(PROG_MOUNT_PATH)/cookie_orig_dst
 
 attach-recvmsg:
 ifeq ($(ENABLE_IPV4),true)
@@ -239,3 +240,39 @@ load-from-obj: init-bpffs load-connect load-sockops load-getsock load-redir load
 attach: attach-connect attach-sockops attach-getsock attach-redir attach-bind attach-sendmsg attach-recvmsg
 
 clean: clean-connect clean-sockops clean-getsock clean-redir clean-maps compile-clean clean-bind clean-sendmsg clean-recvmsg
+
+# libbpf
+
+OUTPUT := .output
+CLANG ?= clang
+LLVM_STRIP ?= llvm-strip
+LIBBPF_SRC := $(abspath ../libbpf/src)
+BPFTOOL_SRC := $(abspath ../bpftool/src)
+LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
+BPFTOOL_OUTPUT ?= $(abspath $(OUTPUT)/bpftool)
+BPFTOOL ?= $(BPFTOOL_OUTPUT)/bootstrap/bpftool
+ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/')
+VMLINUX := ../vmlinux/$(ARCH)/vmlinux.h
+# Use our own libbpf API headers and Linux UAPI headers distributed with
+# libbpf to avoid dependency on system-wide headers, which could be missing or
+# outdated
+INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi -I$(dir $(VMLINUX))
+CFLAGS := -g -Wall
+ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
+
+$(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
+	$(call msg,MKDIR,$@)
+	$(Q)mkdir -p $@
+
+# Build libbpf
+$(LIBBPF_OBJ): $(wildcard $(LIBBPF_SRC)/*.[ch] $(LIBBPF_SRC)/Makefile) | $(OUTPUT)/libbpf
+	$(call msg,LIB,$@)
+	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1		      \
+		    OBJDIR=$(dir $@)/libbpf DESTDIR=$(dir $@)		      \
+		    INCLUDEDIR= LIBDIR= UAPIDIR=			      \
+		    install
+
+# Build bpftool
+$(BPFTOOL): | $(BPFTOOL_OUTPUT)
+	$(call msg,BPFTOOL,$@)
+	$(Q)$(MAKE) ARCH= CROSS_COMPILE= OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap

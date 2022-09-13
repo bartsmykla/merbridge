@@ -18,7 +18,7 @@ limitations under the License.
 
 #define TC_ORIGIN_FLAG 0b00001000
 
-struct bpf_elf_map __section("maps") cookie_original_dst = {
+struct bpf_elf_map __section("maps") cookie_orig_dst = {
     .type = BPF_MAP_TYPE_LRU_HASH,
     .size_key = sizeof(__u64),
     .size_value = sizeof(struct origin_info),
@@ -44,7 +44,7 @@ struct bpf_elf_map __section("maps") process_ip = {
     .max_elem = 1024,
 };
 
-struct bpf_elf_map __section("maps") pair_original_dst = {
+struct bpf_elf_map __section("maps") pair_orig_dst = {
     .type = BPF_MAP_TYPE_LRU_HASH,
     .size_key = sizeof(struct pair),
     .size_value = sizeof(struct origin_info),
@@ -59,7 +59,7 @@ struct bpf_elf_map __section("maps") sock_pair_map = {
     .max_elem = 65535,
 };
 
-struct bpf_elf_map __section("maps") mark_pod_ips_map = {
+struct bpf_elf_map __section("maps") mark_pod_ips = {
     .type = BPF_MAP_TYPE_HASH,
     .size_key = sizeof(__u32),
     .size_value = sizeof(__u32) * 4,

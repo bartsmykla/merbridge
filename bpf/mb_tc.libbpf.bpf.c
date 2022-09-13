@@ -13,20 +13,33 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#include "headers/helpers.h"
-#include "headers/maps.h"
-#include "headers/mesh.h"
-#include <linux/bpf.h>
-#include <linux/filter.h>
-#include <linux/if_ether.h>
-#include <linux/in.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/pkt_cls.h>
-#include <linux/tcp.h>
-#import <stddef.h>
+// #include <linux/pkt_cls.h>
+#include "headers_libbpf/helpers.h"
+#include "headers_libbpf/maps.h"
+#include "headers_libbpf/mesh.h"
 
-__section("classifier_ingress") int mb_tc_ingress(struct __sk_buff *skb)
+#define TC_ACT_OK 0
+#define TC_ACT_SHOT 2
+// #define TC_ORIGIN_FLAG 0b00001000
+#define ETH_P_IP 0x0800
+#define ETH_HLEN 14
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 1024);
+//     __uint(key_size, sizeof(__u32)*4);
+//     __uint(value_size, sizeof(struct pod_config));
+// } local_pod_ips SEC(".maps");
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_LRU_HASH);
+//     __uint(max_entries, 65535);
+//     __uint(key_size, sizeof(struct pair));
+//     __uint(value_size, sizeof(struct origin_info));
+//     __uint(pinning, LIBBPF_PIN_BY_NAME);
+// } pair_orig_dst SEC(".maps");
+
+__section("classifier") int mb_tc_ingress(struct __sk_buff *skb)
 {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
@@ -41,7 +54,7 @@ __section("classifier_ingress") int mb_tc_ingress(struct __sk_buff *skb)
     __u32 csum_off;
     __u32 dport_off;
 
-    __u64 cookie = bpf_get_socket_cookie_skb(skb);
+    __u64 cookie = bpf_get_socket_cookie(skb);
 
     switch (bpf_htons(eth->h_proto)) {
 #if ENABLE_IPV4
@@ -59,6 +72,8 @@ __section("classifier_ingress") int mb_tc_ingress(struct __sk_buff *skb)
         if (iph->protocol != IPPROTO_TCP) {
             return TC_ACT_OK;
         }
+        debugf("tc <  %-6u %pI4 %pI4: in ENABLE_IPV4", cookie, &iph->saddr,
+               &iph->daddr);
         set_ipv4(src_ip, iph->saddr);
         set_ipv4(dst_ip, iph->daddr);
         tcph = (struct tcphdr *)(iph + 1);
@@ -154,7 +169,7 @@ __section("classifier_ingress") int mb_tc_ingress(struct __sk_buff *skb)
         bpf_l4_csum_replace(skb, csum_off, dst_port, in_port, sizeof(dst_port));
         bpf_skb_store_bytes(skb, dport_off, &in_port, sizeof(in_port), 0);
         debugf("tc <  %-5u %-5u %-15pI4: first rewritten", cookie,
-               bpf_ntohs(dst_port), dst_ip[3]);
+               bpf_ntohs(dst_port), &dst_ip[3]);
     } else {
         // request
         struct pair p;
@@ -185,12 +200,12 @@ __section("classifier_ingress") int mb_tc_ingress(struct __sk_buff *skb)
         bpf_l4_csum_replace(skb, csum_off, dst_port, in_port, sizeof(dst_port));
         bpf_skb_store_bytes(skb, dport_off, &in_port, sizeof(in_port), 0);
         debugf("tc <  %-5u %-5u %-15pI4: rewritten", cookie,
-               bpf_ntohs(dst_port), dst_ip[3]);
+               bpf_ntohs(dst_port), &dst_ip[3]);
     }
     return TC_ACT_OK;
 }
 
-__section("classifier_egress") int mb_tc_egress(struct __sk_buff *skb)
+__section("classifier") int mb_tc_egress(struct __sk_buff *skb)
 {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
@@ -205,7 +220,7 @@ __section("classifier_egress") int mb_tc_egress(struct __sk_buff *skb)
     __u32 csum_off;
     __u32 sport_off;
 
-    __u64 cookie = bpf_get_socket_cookie_skb(skb);
+    __u64 cookie = bpf_get_socket_cookie(skb);
 
     switch (bpf_htons(eth->h_proto)) {
 #if ENABLE_IPV4
@@ -263,7 +278,7 @@ __section("classifier_egress") int mb_tc_egress(struct __sk_buff *skb)
     if (tcph->source != in_port) {
         debugf("tc  > %-5u %-5u %pI4: no need to rewrite src port, "
                "bypassed",
-               cookie, bpf_ntohs(tcph->source), dst_ip[3]);
+               cookie, bpf_ntohs(tcph->source), &dst_ip[3]);
         return TC_ACT_OK;
     }
     // response
@@ -281,7 +296,7 @@ __section("classifier_egress") int mb_tc_egress(struct __sk_buff *skb)
     if (!origin) {
         // not exists
         debugf("tc  > %-5u %-5u %pI4: resp origin not found", cookie,
-               bpf_ntohs(tcph->source), pre_dst_ip);
+               bpf_ntohs(tcph->source), &pre_dst_ip);
         return TC_ACT_OK;
     }
     if (!(origin->flags & TC_ORIGIN_FLAG)) {
@@ -292,14 +307,14 @@ __section("classifier_egress") int mb_tc_egress(struct __sk_buff *skb)
     if (tcph->fin && tcph->ack) {
         // todo delete key
         debugf("tc  > %-5u %-5u %pI4: original deleted", cookie,
-               bpf_ntohs(tcph->source), pre_dst_ip);
+               bpf_ntohs(tcph->source), &pre_dst_ip);
         bpf_map_delete_elem(&pair_orig_dst, &p);
     }
     __u16 src_port = origin->port;
     bpf_l4_csum_replace(skb, csum_off, in_port, src_port, sizeof(src_port));
     bpf_skb_store_bytes(skb, sport_off, &src_port, sizeof(src_port), 0);
     debugf("tc  > %-5u %-5u %pI4: rewritten", cookie, bpf_ntohs(src_port),
-           pre_dst_ip);
+           &pre_dst_ip);
     return TC_ACT_OK;
 }
 

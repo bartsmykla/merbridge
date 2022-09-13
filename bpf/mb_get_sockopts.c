@@ -46,7 +46,7 @@ __section("cgroup/getsockopt") int mb_get_sockopt(struct bpf_sockopt *ctx)
     case 2: // ipv4
         set_ipv4(p.dip, ctx->sk->src_ip4);
         set_ipv4(p.sip, ctx->sk->dst_ip4);
-        origin = bpf_map_lookup_elem(&pair_original_dst, &p);
+        origin = bpf_map_lookup_elem(&pair_orig_dst, &p);
         if (origin) {
             // rewrite original_dst
             ctx->optlen = (__s32)sizeof(struct sockaddr_in);
@@ -69,7 +69,7 @@ __section("cgroup/getsockopt") int mb_get_sockopt(struct bpf_sockopt *ctx)
     case 10: // ipv6
         set_ipv6(p.dip, ctx->sk->src_ip6);
         set_ipv6(p.sip, ctx->sk->dst_ip6);
-        origin = bpf_map_lookup_elem(&pair_original_dst, &p);
+        origin = bpf_map_lookup_elem(&pair_orig_dst, &p);
         if (origin) {
             // rewrite original_dst
             ctx->optlen = (__s32)sizeof(struct sockaddr_in6);

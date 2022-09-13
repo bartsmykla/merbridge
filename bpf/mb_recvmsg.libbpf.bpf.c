@@ -13,11 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#include "headers/helpers.h"
-#include "headers/maps.h"
-#include "headers/mesh.h"
-#include <linux/bpf.h>
-#include <linux/in.h>
+#include "headers_libbpf/helpers.h"
+#include "headers_libbpf/mesh.h"
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(__u64));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} cookie_orig_dst SEC(".maps");
 
 #if ENABLE_IPV4
 __section("cgroup/recvmsg4") int mb_recvmsg4(struct bpf_sock_addr *ctx)
@@ -34,7 +39,7 @@ __section("cgroup/recvmsg4") int mb_recvmsg4(struct bpf_sock_addr *ctx)
         // printk("not from pod");
         return 1;
     }
-    __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+    __u64 cookie = bpf_get_socket_cookie(ctx);
     struct origin_info *origin = (struct origin_info *)bpf_map_lookup_elem(
         &cookie_orig_dst, &cookie);
     if (origin) {
@@ -64,7 +69,7 @@ __section("cgroup/recvmsg6") int mb_recvmsg6(struct bpf_sock_addr *ctx)
         return 1;
     }
 
-    __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+    __u64 cookie = bpf_get_socket_cookie(ctx);
     struct origin_info *origin = (struct origin_info *)bpf_map_lookup_elem(
         &cookie_orig_dst, &cookie);
     if (origin) {

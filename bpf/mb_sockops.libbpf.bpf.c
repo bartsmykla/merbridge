@@ -13,16 +13,45 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#include "headers/helpers.h"
-#include "headers/maps.h"
-#include "headers/mesh.h"
-#include <linux/bpf.h>
-#include <linux/in.h>
+#include "headers_libbpf/helpers.h"
+#include "headers_libbpf/mesh.h"
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(__u64));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} cookie_orig_dst SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} process_ip SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(struct pair));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} pair_orig_dst SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_SOCKHASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(struct pair));
+    __uint(value_size, sizeof(__u32));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} sock_pair_map SEC(".maps");
 
 #if ENABLE_IPV4
 static inline int sockops_ipv4(struct bpf_sock_ops *skops)
 {
-    __u64 cookie = bpf_get_socket_cookie_ops(skops);
+    __u64 cookie = bpf_get_socket_cookie(skops);
 
     struct pair p;
     memset(&p, 0, sizeof(p));
@@ -31,19 +60,18 @@ static inline int sockops_ipv4(struct bpf_sock_ops *skops)
     set_ipv4(p.dip, skops->remote_ip4);
     p.dport = skops->remote_port >> 16;
 
-    struct origin_info *dst =
-        bpf_map_lookup_elem(&cookie_orig_dst, &cookie);
+    struct origin_info *dst = bpf_map_lookup_elem(&cookie_orig_dst, &cookie);
     if (dst) {
         struct origin_info dd = *dst;
         if (!(dd.flags & 1)) {
             __u32 pid = dd.pid;
+            __u32 remote_ip = skops->remote_ip4;
+            __u32 local_ip = skops->local_ip4;
             // process ip not detected
-            if (skops->local_ip4 == envoy_ip ||
-                skops->local_ip4 == skops->remote_ip4) {
+            if (local_ip == envoy_ip || local_ip == remote_ip) {
                 // envoy to local
-                __u32 ip = skops->remote_ip4;
-                debugf("detected process %d's ip is %pI4", pid, &ip);
-                bpf_map_update_elem(&process_ip, &pid, &ip, BPF_ANY);
+                debugf("detected process %d's ip is %pI4", pid, &remote_ip);
+                bpf_map_update_elem(&process_ip, &pid, &remote_ip, BPF_ANY);
 #ifdef USE_RECONNECT
                 if (skops->remote_port >> 16 == bpf_htons(IN_REDIRECT_PORT)) {
                     printk("incorrect connection: cookie=%d", cookie);
@@ -52,9 +80,8 @@ static inline int sockops_ipv4(struct bpf_sock_ops *skops)
 #endif
             } else {
                 // envoy to envoy
-                __u32 ip = skops->local_ip4;
-                bpf_map_update_elem(&process_ip, &pid, &ip, BPF_ANY);
-                debugf("detected process %d's ip is %pI4", pid, &ip);
+                bpf_map_update_elem(&process_ip, &pid, &local_ip, BPF_ANY);
+                debugf("detected process %d's ip is %pI4", pid, &local_ip);
             }
         }
         // get_sockopts can read pid and cookie,
@@ -73,7 +100,7 @@ static inline int sockops_ipv4(struct bpf_sock_ops *skops)
 #if ENABLE_IPV6
 static inline int sockops_ipv6(struct bpf_sock_ops *skops)
 {
-    __u64 cookie = bpf_get_socket_cookie_ops(skops);
+    __u64 cookie = bpf_get_socket_cookie(skops);
     struct pair p;
     memset(&p, 0, sizeof(p));
     p.sport = bpf_htons(skops->local_port);
@@ -81,8 +108,7 @@ static inline int sockops_ipv6(struct bpf_sock_ops *skops)
     set_ipv6(p.sip, skops->local_ip6);
     set_ipv6(p.dip, skops->remote_ip6);
 
-    struct origin_info *dst =
-        bpf_map_lookup_elem(&cookie_orig_dst, &cookie);
+    struct origin_info *dst = bpf_map_lookup_elem(&cookie_orig_dst, &cookie);
     if (dst) {
         struct origin_info dd = *dst;
         // get_sockopts can read pid and cookie,

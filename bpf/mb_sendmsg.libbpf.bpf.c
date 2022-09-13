@@ -13,11 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#include "headers/helpers.h"
-#include "headers/maps.h"
-#include "headers/mesh.h"
-#include <linux/bpf.h>
-#include <linux/in.h>
+#include "headers_libbpf/helpers.h"
+#include "headers_libbpf/mesh.h"
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(__u64));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} cookie_orig_dst SEC(".maps");
 
 #if ENABLE_IPV4
 __section("cgroup/sendmsg4") int mb_sendmsg4(struct bpf_sock_addr *ctx)
@@ -37,7 +42,7 @@ __section("cgroup/sendmsg4") int mb_sendmsg4(struct bpf_sock_addr *ctx)
     }
     __u64 uid = bpf_get_current_uid_gid() & 0xffffffff;
     if (uid != SIDECAR_USER_ID) {
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+        __u64 cookie = bpf_get_socket_cookie(ctx);
         // needs rewrite
         struct origin_info origin;
         memset(&origin, 0, sizeof(origin));
@@ -79,7 +84,7 @@ __section("cgroup/sendmsg6") int mb_sendmsg6(struct bpf_sock_addr *ctx)
         origin.port = ctx->user_port;
         set_ipv6(origin.ip, ctx->user_ip6);
         // save original dst
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+        __u64 cookie = bpf_get_socket_cookie(ctx);
         if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
                                 BPF_ANY)) {
             printk("update origin cookie failed: %d", cookie);

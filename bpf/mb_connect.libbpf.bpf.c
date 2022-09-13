@@ -13,11 +13,41 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#include "headers/helpers.h"
-#include "headers/maps.h"
-#include "headers/mesh.h"
-#include <linux/bpf.h>
-#include <linux/in.h>
+
+#include "headers_libbpf/helpers.h"
+#include "headers_libbpf/maps.h"
+#include "headers_libbpf/mesh.h"
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_LRU_HASH);
+//     __uint(max_entries, 65535);
+//     __uint(key_size, sizeof(__u64));
+//     __uint(value_size, sizeof(struct origin_info));
+//     __uint(pinning, LIBBPF_PIN_BY_NAME);
+// } cookie_orig_dst SEC(".maps");
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 65535);
+//     __uint(key_size, sizeof(__u64));
+//     __uint(value_size, sizeof(__u32)*4);
+//     __uint(pinning, LIBBPF_PIN_BY_NAME);
+// } mark_pod_ips SEC(".maps");
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 1024);
+//     __uint(key_size, sizeof(__u32)*4);
+//     __uint(value_size, sizeof(struct pod_config));
+// } local_pod_ips SEC(".maps");
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_LRU_HASH);
+//     __uint(max_entries, 1024);
+//     __uint(key_size, sizeof(__u32));
+//     __uint(value_size, sizeof(__u32));
+//     __uint(pinning, LIBBPF_PIN_BY_NAME);
+// } process_ip SEC(".maps");
 
 #if ENABLE_IPV4
 static __u32 outip = 1;
@@ -46,9 +76,8 @@ static inline int udp_connect4(struct bpf_sock_addr *ctx)
         set_ipv4(origin.ip, ctx->user_ip4);
         origin.port = ctx->user_port;
         // save original dst
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
-        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
-                                BPF_ANY)) {
+        __u64 cookie = bpf_get_socket_cookie(ctx);
+        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin, BPF_ANY)) {
             printk("update origin cookie failed: %d", cookie);
         }
         ctx->user_port = bpf_htons(DNS_CAPTURE_PORT);
@@ -61,46 +90,43 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
 {
     // todo(kebe7jun) more reliable way to verify,
     if (!is_port_listen_current_ns(ctx, ip_zero, OUT_REDIRECT_PORT)) {
+        // debugf("cn #  : not listening in current ns");
         // bypass normal traffic.
         // we only deal pod's traffic managed by istio or kuma.
         return 1;
     }
+
     __u32 curr_pod_ip = 0;
     __u32 _curr_pod_ip[4];
-    {
-        // get ip addresses of current pod/ns.
-        struct bpf_sock_tuple tuple = {};
-        tuple.ipv4.dport = bpf_htons(SOCK_IP_MARK_PORT);
-        tuple.ipv4.daddr = 0;
-        struct bpf_sock *s = bpf_sk_lookup_tcp(ctx, &tuple, sizeof(tuple.ipv4),
-                                               BPF_F_CURRENT_NETNS, 0);
-        if (s) {
-            __u32 curr_ip_mark = s->mark;
-            bpf_sk_release(s);
-            __u32 *ip = bpf_map_lookup_elem(&mark_pod_ips, &curr_ip_mark);
-            if (ip) {
-                set_ipv6(_curr_pod_ip, ip); // network order
-                curr_pod_ip = get_ipv4(ip);
-            } else {
-                debugf("get ip for mark %x error", curr_ip_mark);
-            }
-        }
+
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    __u64 netns_inum = BPF_CORE_READ(t, nsproxy, net_ns, ns.inum);
+
+    __u32 *ip = bpf_map_lookup_elem(&mark_pod_ips, &netns_inum);
+    if (!ip) {
+        debugf("cn #  : geting ip for netns failed: netns_inum: %u",
+               netns_inum);
+    } else {
+        set_ipv6(_curr_pod_ip, ip); // network order
+        curr_pod_ip = get_ipv4(ip);
+        debugf("cn #  : got ip for netns: netns_inum: %u, ip: %pI4", netns_inum,
+               &curr_pod_ip);
     }
 
-    if (curr_pod_ip == 0) {
-        debugf("get current pod ip error");
-    }
     __u32 uid = bpf_get_current_uid_gid() & 0xffffffff;
     __u32 dst_ip = ctx->user_ip4;
+    debugf("cn #  : %u %pI4 %pI4: connect", uid, &curr_pod_ip, &dst_ip);
+
     if (uid != SIDECAR_USER_ID) {
         if ((dst_ip & 0xff) == 0x7f) {
             // app call local, bypass.
             return 1;
         }
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+        __u64 cookie = bpf_get_socket_cookie(ctx);
         // app call others
-        debugf("call from user container: cookie: %d, ip: %pI4, port: %d",
-               cookie, &dst_ip, bpf_htons(ctx->user_port));
+        debugf(
+            "cn #  : call from user container: cookie: %d, ip: %pI4, port: %d",
+            cookie, &dst_ip, bpf_htons(ctx->user_port));
 
         // we need redirect it to envoy.
         struct origin_info origin;
@@ -108,8 +134,7 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
         set_ipv4(origin.ip, dst_ip);
         origin.port = ctx->user_port;
         origin.flags = 1;
-        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
-                                BPF_ANY)) {
+        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin, BPF_ANY)) {
             printk("write cookie_orig_dst failed");
             return 0;
         }
@@ -121,25 +146,27 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
                 IS_EXCLUDE_PORT(pod->exclude_out_ports, ctx->user_port,
                                 &exclude);
                 if (exclude) {
-                    debugf("ignored dest port by exclude_out_ports, ip: "
-                           "%pI4, port: %d",
-                           &curr_pod_ip, bpf_htons(ctx->user_port));
+                    debugf(
+                        "cn #  : ignored dest port by exclude_out_ports, ip: "
+                        "%pI4, port: %d",
+                        &curr_pod_ip, bpf_htons(ctx->user_port));
                     return 1;
                 }
                 IS_EXCLUDE_IPRANGES(pod->exclude_out_ranges, dst_ip, &exclude);
-                debugf("exclude ipranges: %x, exclude: %d",
+                debugf("cn #  : exclude ipranges: %x, exclude: %d",
                        pod->exclude_out_ranges[0].net, exclude);
                 if (exclude) {
-                    debugf(
-                        "ignored dest ranges by exclude_out_ranges, ip: %pI4",
-                        &dst_ip);
+                    debugf("cn #  : ignored dest ranges by exclude_out_ranges, "
+                           "ip: %pI4",
+                           &dst_ip);
                     return 1;
                 }
                 int include = 0;
                 IS_INCLUDE_PORT(pod->include_out_ports, ctx->user_port,
                                 &include);
                 if (!include) {
-                    debugf("dest port %d not in pod(%pI4)'s include_out_ports, "
+                    debugf("cn #  : dest port %d not in pod(%pI4)'s "
+                           "include_out_ports, "
                            "ignored.",
                            bpf_htons(ctx->user_port), &curr_pod_ip);
                     return 1;
@@ -147,13 +174,15 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
 
                 IS_INCLUDE_IPRANGES(pod->include_out_ranges, dst_ip, &include);
                 if (!include) {
-                    debugf("dest %pI4 not in pod(%pI4)'s include_out_ranges, "
+                    debugf("cn #  : dest %pI4 not in pod(%pI4)'s "
+                           "include_out_ranges, "
                            "ignored.",
                            &dst_ip, &curr_pod_ip);
                     return 1;
                 }
             } else {
-                debugf("current pod ip found(%pI4), but can not find pod_info "
+                debugf("cn #  : current pod ip found(%pI4), but can not find "
+                       "pod_info "
                        "from local_pod_ips",
                        &curr_pod_ip);
             }
@@ -188,7 +217,7 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
         struct pod_config *pod = bpf_map_lookup_elem(&local_pod_ips, _dst_ip);
         if (!pod) {
             // dst ip is not in this node, bypass
-            debugf("dest ip: %pI4 not in this node, bypass", &dst_ip);
+            debugf("cn #  : dest ip: %pI4 not in this node, bypass", &dst_ip);
             return 1;
         }
 
@@ -206,7 +235,8 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
                 IS_EXCLUDE_PORT(pod->exclude_in_ports, ctx->user_port,
                                 &exclude);
                 if (exclude) {
-                    debugf("ignored dest port by exclude_in_ports, ip: %pI4, "
+                    debugf("cn #  : ignored dest port by exclude_in_ports, ip: "
+                           "%pI4, "
                            "port: %d",
                            &dst_ip, bpf_htons(ctx->user_port));
                     return 1;
@@ -215,7 +245,8 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
                 IS_INCLUDE_PORT(pod->include_in_ports, ctx->user_port,
                                 &include);
                 if (!include) {
-                    debugf("ignored dest port by include_in_ports, ip: %pI4, "
+                    debugf("cn #  : ignored dest port by include_in_ports, ip: "
+                           "%pI4, "
                            "port: %d",
                            &dst_ip, bpf_htons(ctx->user_port));
                     return 1;
@@ -237,7 +268,8 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
             if (curr_ip) {
                 // envoy to other envoy
                 if (*(__u32 *)curr_ip != dst_ip) {
-                    debugf("enovy to other, rewrite dst port from %d to %d",
+                    debugf("cn #  : enovy to other, rewrite dst port from %d "
+                           "to %d",
                            ctx->user_port, IN_REDIRECT_PORT);
                     ctx->user_port = bpf_htons(IN_REDIRECT_PORT);
                 }
@@ -246,7 +278,6 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
             } else {
                 origin.flags = 0;
                 origin.pid = pid;
-#ifdef USE_RECONNECT
                 // envoy to envoy
                 // try redirect to 15006
                 // but it may cause error if it is envoy call self pod,
@@ -255,11 +286,11 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
                 // we should reject this traffic in sockops,
                 // envoy will create a new connection to self pod.
                 ctx->user_port = bpf_htons(IN_REDIRECT_PORT);
-#endif
             }
         }
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
-        debugf("call from sidecar container: cookie: %d, ip: %pI4, port: %d",
+        __u64 cookie = bpf_get_socket_cookie(ctx);
+        debugf("cn #  : call from sidecar container: cookie: %d, ip: %pI4, "
+               "port: %d",
                cookie, &dst_ip, bpf_htons(ctx->user_port));
         if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
                                 BPF_NOEXIST)) {
@@ -273,7 +304,14 @@ static inline int tcp_connect4(struct bpf_sock_addr *ctx)
 
 __section("cgroup/connect4") int mb_sock_connect4(struct bpf_sock_addr *ctx)
 {
-    return 0;
+    switch (ctx->protocol) {
+    case IPPROTO_TCP:
+        return tcp_connect4(ctx);
+    case IPPROTO_UDP:
+        return udp_connect4(ctx);
+    default:
+        return 1;
+    }
 }
 #endif
 
@@ -302,9 +340,8 @@ static inline int udp_connect6(struct bpf_sock_addr *ctx)
         set_ipv6(origin.ip, ctx->user_ip6);
         origin.port = ctx->user_port;
         // save original dst
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
-        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
-                                BPF_ANY)) {
+        __u64 cookie = bpf_get_socket_cookie(ctx);
+        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin, BPF_ANY)) {
             printk("update origin cookie failed: %d", cookie);
         }
         ctx->user_port = bpf_htons(DNS_CAPTURE_PORT);
@@ -322,39 +359,36 @@ static inline int tcp_connect6(struct bpf_sock_addr *ctx)
         return 1;
     }
 
-    // get ip addresses of current pod/ns.
-    struct bpf_sock_tuple tuple = {};
-    tuple.ipv6.dport = bpf_htons(SOCK_IP_MARK_PORT);
-    set_ipv6(tuple.ipv6.daddr, ip_zero6);
-    struct bpf_sock *s = bpf_sk_lookup_tcp(ctx, &tuple, sizeof(tuple.ipv6),
-                                           BPF_F_CURRENT_NETNS, 0);
-    if (!s) {
-        // cni mode required for ipv6
-        debugf("dummy socket not found");
+    __u32 curr_pod_ip[4];
+    __u32 dst_ip[4];
+
+    struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+    __u64 netns_inum = BPF_CORE_READ(t, nsproxy, net_ns, ns.inum);
+
+    __u32 *ip = bpf_map_lookup_elem(&mark_pod_ips, &netns_inum);
+    if (!ip) {
+        debugf("cn #  : getting ip for netns failed: netns_inum: %u",
+               netns_inum);
         return 1;
     }
 
-    __u32 curr_ip_mark = s->mark;
-    bpf_sk_release(s);
-    __u32 *ip = bpf_map_lookup_elem(&mark_pod_ips, &curr_ip_mark);
-    if (!ip) {
-        debugf("get ip for mark %x error", curr_ip_mark);
-        return 1;
-    }
-    __u32 curr_pod_ip[4];
+    debugf("cn #  : got ip for netns: netns_inum: %u, ip: %pI6", netns_inum,
+           &curr_pod_ip);
+
     set_ipv6(curr_pod_ip, ip);
-    __u32 dst_ip[4];
     set_ipv6(dst_ip, ctx->user_ip6);
+
     __u64 uid = bpf_get_current_uid_gid() & 0xffffffff;
     if (uid != SIDECAR_USER_ID) {
         if (ipv6_equal(dst_ip, localhost6)) {
             // app call local, bypass.
             return 1;
         }
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
+        __u64 cookie = bpf_get_socket_cookie(ctx);
         // app call others
-        debugf("call from user container: cookie: %d, ip: %pI6c, port: %d",
-               cookie, dst_ip, bpf_htons(ctx->user_port));
+        debugf(
+            "cn #  : call from user container: cookie: %d, ip: %pI6c, port: %d",
+            cookie, dst_ip, bpf_htons(ctx->user_port));
 
         // we need redirect it to envoy.
         struct origin_info origin;
@@ -362,8 +396,7 @@ static inline int tcp_connect6(struct bpf_sock_addr *ctx)
         set_ipv6(origin.ip, dst_ip);
         origin.port = ctx->user_port;
 
-        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
-                                BPF_ANY)) {
+        if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin, BPF_ANY)) {
             printk("write cookie_orig_dst failed");
             return 0;
         }
@@ -385,7 +418,7 @@ static inline int tcp_connect6(struct bpf_sock_addr *ctx)
         // from envoy to others
         if (!bpf_map_lookup_elem(&local_pod_ips, dst_ip)) {
             // dst ip is not in this node, bypass
-            debugf("dest ip: %pI6c not in this node, bypass", dst_ip);
+            debugf("cn #  : dest ip: %pI6c not in this node, bypass", dst_ip);
             return 1;
         }
         // dst ip is in this node, but not the current pod,
@@ -395,12 +428,13 @@ static inline int tcp_connect6(struct bpf_sock_addr *ctx)
         origin.port = ctx->user_port;
         set_ipv6(origin.ip, dst_ip);
         if (!ipv6_equal(dst_ip, curr_pod_ip)) {
-            debugf("enovy to other, rewrite dst port from %d to %d",
+            debugf("cn #  : enovy to other, rewrite dst port from %d to %d",
                    ctx->user_port, bpf_htons(IN_REDIRECT_PORT));
             ctx->user_port = bpf_htons(IN_REDIRECT_PORT);
         }
-        __u64 cookie = bpf_get_socket_cookie_addr(ctx);
-        debugf("call from sidecar container: cookie: %d, ip: %pI6c, port: %d",
+        __u64 cookie = bpf_get_socket_cookie(ctx);
+        debugf("cn #  : call from sidecar container: cookie: %d, ip: %pI6c, "
+               "port: %d",
                cookie, dst_ip, bpf_htons(ctx->user_port));
         if (bpf_map_update_elem(&cookie_orig_dst, &cookie, &origin,
                                 BPF_NOEXIST)) {
