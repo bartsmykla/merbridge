@@ -13,55 +13,62 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#pragma once
+
+#ifndef MAPS_H
+#define MAPS_H
+
 #include "helpers.h"
 
-#define TC_ORIGIN_FLAG 0b00001000
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(__u64));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} cookie_orig_dst SEC(".maps");
 
-struct bpf_elf_map __section("maps") cookie_original_dst = {
-    .type = BPF_MAP_TYPE_LRU_HASH,
-    .size_key = sizeof(__u64),
-    .size_value = sizeof(struct origin_info),
-    .max_elem = 65535,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(__u64));
+    __uint(value_size, sizeof(__u32) * 4);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} netns_pod_ips SEC(".maps");
 
 // local_pods stores Pods' ips in current node.
 // which can be set by controller.
 // only contains injected pods.
-struct bpf_elf_map __section("maps") local_pod_ips = {
-    .type = BPF_MAP_TYPE_HASH,
-    .size_key = sizeof(__u32) * 4,
-    .size_value = sizeof(struct pod_config),
-    .max_elem = 1024,
-    .pinning = PIN_GLOBAL_NS,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __uint(key_size, sizeof(__u32) * 4);
+    __uint(value_size, sizeof(struct pod_config));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} local_pod_ips SEC(".maps");
 
 // process_ip stores envoy's ip address.
-struct bpf_elf_map __section("maps") process_ip = {
-    .type = BPF_MAP_TYPE_LRU_HASH,
-    .size_key = sizeof(__u32),
-    .size_value = sizeof(__u32),
-    .max_elem = 1024,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} process_ip SEC(".maps");
 
-struct bpf_elf_map __section("maps") pair_original_dst = {
-    .type = BPF_MAP_TYPE_LRU_HASH,
-    .size_key = sizeof(struct pair),
-    .size_value = sizeof(struct origin_info),
-    .max_elem = 65535,
-    .pinning = PIN_GLOBAL_NS,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(struct pair));
+    __uint(value_size, sizeof(struct origin_info));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} pair_orig_dst SEC(".maps");
 
-struct bpf_elf_map __section("maps") sock_pair_map = {
-    .type = BPF_MAP_TYPE_SOCKHASH,
-    .size_key = sizeof(struct pair),
-    .size_value = sizeof(__u32),
-    .max_elem = 65535,
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_SOCKHASH);
+    __uint(max_entries, 65535);
+    __uint(key_size, sizeof(struct pair));
+    __uint(value_size, sizeof(__u32));
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} sock_pair_map SEC(".maps");
 
-struct bpf_elf_map __section("maps") mark_pod_ips_map = {
-    .type = BPF_MAP_TYPE_HASH,
-    .size_key = sizeof(__u32),
-    .size_value = sizeof(__u32) * 4,
-    .max_elem = 65535,
-};
+#endif

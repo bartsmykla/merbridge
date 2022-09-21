@@ -27,3 +27,14 @@ compile_commands.json
 .vscode
 
 .DS_Store
+
+build
+bpf/.output
+bpf/mb_bind
+bpf/mb_connect
+bpf/mb_get_sockopts
+bpf/mb_recvmsg
+bpf/mb_redir
+bpf/mb_sendmsg
+bpf/mb_sockops
+bpf/mb_tc

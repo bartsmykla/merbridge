@@ -124,7 +124,7 @@ func (s *server) CmdDelete(args *skel.CmdArgs) (err error) {
 	delete(s.listeners, inode)
 
 	s.Unlock()
-	m, err := ebpf.LoadPinnedMap(path.Join(s.bpfMountPath, "mark_pod_ips_map"), &ebpf.LoadPinOptions{})
+	m, err := ebpf.LoadPinnedMap(path.Join(s.bpfMountPath, "netns_pod_ips"), &ebpf.LoadPinOptions{})
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (s *server) listenConfig(addr net.Addr, netns string) net.ListenConfig {
 		Control: func(network, address string, conn syscall.RawConn) error {
 			var operr error
 			if err := conn.Control(func(fd uintptr) {
-				m, err := ebpf.LoadPinnedMap(path.Join(s.bpfMountPath, "mark_pod_ips_map"), &ebpf.LoadPinOptions{})
+				m, err := ebpf.LoadPinnedMap(path.Join(s.bpfMountPath, "netns_pod_ips"), &ebpf.LoadPinOptions{})
 				if err != nil {
 					operr = err
 					return

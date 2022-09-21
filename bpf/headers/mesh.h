@@ -14,7 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#define SOCK_IP_MARK_PORT 39807
+#ifndef MESH_H
+#define MESH_H
 
 #define ISTIO 1
 #define LINKERD 2
@@ -95,4 +96,6 @@ static const __u32 envoy_ip6[4] = {0, 0, 0, 6 << 24};
 
 #else
 #error "Mesh mode not supported yet"
+#endif
+
 #endif
